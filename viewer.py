@@ -19,9 +19,9 @@ def main(page: ft.Page):
             conn.close()
             base_cats = []
             for c in cats:
-                if c and c != "Inbox": 
+                if c and c != "Inbox" and c != "All": 
                     base_cats.append(c)
-            return base_cats
+            return sorted(base_cats)
         except:
             return []
 
@@ -53,13 +53,12 @@ def main(page: ft.Page):
         expand=True,
         runs_count=4,          
         max_extent=350,        
-        child_aspect_ratio=0.7, 
+        child_aspect_ratio=0.75, 
         spacing=15,
         run_spacing=15,
         padding=20,
     )
 
-    # RE-ADDED MISSING COMPONENT
     rail = ft.NavigationRail(
         selected_index=0,
         label_type=ft.NavigationRailLabelType.ALL,
@@ -77,29 +76,31 @@ def main(page: ft.Page):
         delete_link_db(link_id)
         refresh_app()
 
+    # --- DETAILED SUMMARY MODAL ---
+    def show_summary_dialog(title, summary):
+        dlg = ft.AlertDialog(
+            title=ft.Text(title, size=20, weight="bold"),
+            content=ft.Container(
+                width=500,
+                height=400,
+                content=ft.Column([
+                    ft.Markdown(
+                        summary, 
+                        selectable=True,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
+                    )
+                ], scroll="adaptive")
+            ),
+        )
+        # FIX: The old way (page.dialog = dlg) is deprecated and broken in new Flet versions.
+        # Use page.open(dlg) instead.
+        page.open(dlg)
+
     def build_card(row):
         link_id, title, img_url, url, category, ai_summary = row
         
         has_map = ai_summary and "maps.google.com" in ai_summary
         
-        ai_section = ft.Container()
-        if ai_summary:
-            ai_section = ft.Container(
-                bgcolor="#e3f2fd",
-                padding=10,
-                border_radius=8,
-                margin=ft.margin.only(top=5),
-                content=ft.Column([
-                    ft.Text("✨ Nexus AI Analysis", size=10, weight="bold", color="blue"),
-                    ft.Markdown(
-                        ai_summary, 
-                        selectable=True,
-                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                        on_tap_link=lambda e: open_url(e.data)
-                    )
-                ])
-            )
-
         return ft.Card(
             elevation=0,
             content=ft.Container(
@@ -108,17 +109,19 @@ def main(page: ft.Page):
                 content=ft.Column(
                     spacing=0,
                     controls=[
+                        # Image Section
                         ft.Container(
-                            height=140,
+                            height=150,
                             content=ft.Image(
                                 src=img_url if img_url else "https://placehold.co/600x400",
                                 width=float("inf"),
-                                height=140,
+                                height=150,
                                 fit=ft.ImageFit.COVER,
                                 border_radius=ft.border_radius.only(top_left=12, top_right=12),
                             ),
                             on_click=lambda e: open_url(url)
                         ),
+                        # Text Content
                         ft.Container(
                             padding=12,
                             expand=True,
@@ -127,21 +130,33 @@ def main(page: ft.Page):
                                 scroll="hidden",
                                 controls=[
                                     ft.Row([
-                                        ft.Text(str(category).upper(), size=10, weight="bold", color="grey"),
+                                        ft.Container(
+                                            content=ft.Text(str(category).upper(), size=10, weight="bold", color="white"),
+                                            bgcolor="blue" if category != "Inbox" else "grey",
+                                            padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                                            border_radius=4
+                                        ),
                                         ft.Container(expand=True),
                                         ft.Icon(ft.Icons.MAP, size=16, color="green") if has_map else ft.Container()
                                     ]),
                                     ft.Text(title, weight="bold", size=14, max_lines=2, overflow="ellipsis", color="#1c1e21"),
-                                    ai_section,
                                 ]
                             )
                         ),
+                        # Action Buttons
                         ft.Container(
-                            padding=8,
+                            padding=10,
                             content=ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    ft.TextButton("Open Link", on_click=lambda e: open_url(url)),
+                                    # View Summary Button
+                                    ft.TextButton(
+                                        "View Summary", 
+                                        icon=ft.Icons.ANALYTICS_OUTLINED, 
+                                        on_click=lambda e: show_summary_dialog(title, ai_summary)
+                                    ) if ai_summary else ft.Container(),
+                                    
+                                    # Delete Button
                                     ft.IconButton(
                                         icon=ft.Icons.DELETE_OUTLINE_ROUNDED, 
                                         icon_color="#ff4757",
@@ -175,18 +190,19 @@ def main(page: ft.Page):
                 selected_icon=ft.Icons.DASHBOARD_SHARP, 
                 label="All"
             ),
-            ft.NavigationRailDestination(
-                icon=ft.Icons.INBOX_OUTLINED,
-                selected_icon=ft.Icons.INBOX_SHARP,
-                label="Inbox"
-            )
         ]
         
         cats = get_categories() 
         for c in cats:
+            icon = ft.Icons.FOLDER_OUTLINED
+            if c == "Recipe": icon = ft.Icons.RESTAURANT
+            elif c == "Travel": icon = ft.Icons.AIRPLANE_TICKET
+            elif c == "Tech": icon = ft.Icons.COMPUTER
+            elif c == "Education": icon = ft.Icons.SCHOOL
+            
             dests.append(
                 ft.NavigationRailDestination(
-                    icon=ft.Icons.FOLDER_OUTLINED, 
+                    icon=icon, 
                     label=c
                 )
             )
@@ -201,10 +217,8 @@ def main(page: ft.Page):
         
         if index == 0:
             current_category = "All"
-        elif index == 1:
-            current_category = "Inbox"
         else:
-            cat_index = index - 2
+            cat_index = index - 1
             if cat_index < len(cats):
                 current_category = cats[cat_index]
         refresh_app()
