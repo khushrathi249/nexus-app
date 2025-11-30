@@ -4,3 +4,4 @@ requests
 beautifulsoup4
 yt-dlp
 google-generativeai
+geopy

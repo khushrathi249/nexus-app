@@ -29,15 +29,16 @@ def main(page: ft.Page):
         try:
             conn = sqlite3.connect("nexus.db")
             c = conn.cursor()
+            # UPDATED QUERY: Now fetches lat and lon
             if category == "All":
-                c.execute("SELECT id, title, image_url, url, category, ai_summary FROM links ORDER BY id DESC")
+                c.execute("SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links ORDER BY id DESC")
             else:
-                c.execute("SELECT id, title, image_url, url, category, ai_summary FROM links WHERE category=? ORDER BY id DESC", (category,))
+                c.execute("SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links WHERE category=? ORDER BY id DESC", (category,))
             data = c.fetchall()
             conn.close()
             return data
         except Exception as e:
-            print(e)
+            print(f"DB Error: {e}")
             return []
 
     def delete_link_db(link_id):
@@ -53,7 +54,7 @@ def main(page: ft.Page):
         expand=True,
         runs_count=4,          
         max_extent=350,        
-        child_aspect_ratio=0.75, 
+        child_aspect_ratio=0.7, 
         spacing=15,
         run_spacing=15,
         padding=20,
@@ -71,36 +72,63 @@ def main(page: ft.Page):
 
     def open_url(url):
         webbrowser.open(url)
+        
+    def open_map(lat, lon):
+        if lat and lon:
+            webbrowser.open(f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
 
     def delete_click(e, link_id):
         delete_link_db(link_id)
         refresh_app()
 
     # --- DETAILED SUMMARY MODAL ---
-    def show_summary_dialog(title, summary):
+    def show_summary_dialog(title, summary, lat=None, lon=None):
+        content_controls = [
+            ft.Markdown(
+                summary, 
+                selectable=True,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
+            )
+        ]
+        
+        if lat and lon:
+            content_controls.insert(0, 
+                ft.Container(
+                    content=ft.ElevatedButton(
+                        "Open Location in Google Maps",
+                        icon=ft.Icons.MAP,
+                        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_100, color=ft.Colors.GREEN_800),
+                        on_click=lambda e: open_map(lat, lon)
+                    ),
+                    padding=ft.padding.only(bottom=10)
+                )
+            )
+
         dlg = ft.AlertDialog(
             title=ft.Text(title, size=20, weight="bold"),
             content=ft.Container(
                 width=500,
                 height=400,
-                content=ft.Column([
-                    ft.Markdown(
-                        summary, 
-                        selectable=True,
-                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
-                    )
-                ], scroll="adaptive")
+                content=ft.Column(content_controls, scroll="adaptive")
             ),
         )
-        # FIX: The old way (page.dialog = dlg) is deprecated and broken in new Flet versions.
-        # Use page.open(dlg) instead.
         page.open(dlg)
 
     def build_card(row):
-        link_id, title, img_url, url, category, ai_summary = row
+        link_id, title, img_url, url, category, ai_summary, lat, lon = row
         
-        has_map = ai_summary and "maps.google.com" in ai_summary
+        # DEBUG: Treat 0.0 as invalid, ensure float
+        try:
+            lat = float(lat) if lat is not None else None
+            lon = float(lon) if lon is not None else None
+        except:
+            lat, lon = None, None
+
+        has_geo = lat is not None and lon is not None
         
+        # DEBUG TEXT: To prove to user if data exists
+        geo_debug_text = f"Lat: {lat:.2f}" if has_geo else "No Geo"
+
         return ft.Card(
             elevation=0,
             content=ft.Container(
@@ -137,9 +165,15 @@ def main(page: ft.Page):
                                             border_radius=4
                                         ),
                                         ft.Container(expand=True),
-                                        ft.Icon(ft.Icons.MAP, size=16, color="green") if has_map else ft.Container()
+                                        # Visual Pin
+                                        ft.Row([
+                                            ft.Icon(ft.Icons.PIN_DROP, size=14, color="red"),
+                                            ft.Text("Map", size=10, color="red", weight="bold")
+                                        ], spacing=2) if has_geo else ft.Container()
                                     ]),
                                     ft.Text(title, weight="bold", size=14, max_lines=2, overflow="ellipsis", color="#1c1e21"),
+                                    # DEBUG: Show coordinates to user (Comment this out later)
+                                    ft.Text(geo_debug_text, size=9, color="grey"),
                                 ]
                             )
                         ),
@@ -149,14 +183,12 @@ def main(page: ft.Page):
                             content=ft.Row(
                                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
-                                    # View Summary Button
                                     ft.TextButton(
-                                        "View Summary", 
+                                        "View Note", 
                                         icon=ft.Icons.ANALYTICS_OUTLINED, 
-                                        on_click=lambda e: show_summary_dialog(title, ai_summary)
+                                        on_click=lambda e: show_summary_dialog(title, ai_summary, lat, lon)
                                     ) if ai_summary else ft.Container(),
                                     
-                                    # Delete Button
                                     ft.IconButton(
                                         icon=ft.Icons.DELETE_OUTLINE_ROUNDED, 
                                         icon_color="#ff4757",
@@ -199,6 +231,7 @@ def main(page: ft.Page):
             elif c == "Travel": icon = ft.Icons.AIRPLANE_TICKET
             elif c == "Tech": icon = ft.Icons.COMPUTER
             elif c == "Education": icon = ft.Icons.SCHOOL
+            elif c == "Fitness": icon = ft.Icons.FITNESS_CENTER
             
             dests.append(
                 ft.NavigationRailDestination(
