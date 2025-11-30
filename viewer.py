@@ -3,13 +3,20 @@ import sqlite3
 import webbrowser
 
 def main(page: ft.Page):
-    page.title = "Nexus AI"
+    page.title = "Nexus AI Viewer"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
     page.bgcolor = "#f0f2f5"  
     
+    # State
     current_category = "All" 
+    current_search = ""
 
+    # --- CONSTANTS ---
+    # Only show map UI for these categories
+    MAP_RELEVANT_CATEGORIES = ["Travel", "Food", "Recipe", "Restaurant", "Event", "Hiking", "Inbox"]
+
+    # --- DATABASE FUNCTIONS ---
     def get_categories():
         try:
             conn = sqlite3.connect("nexus.db")
@@ -25,15 +32,30 @@ def main(page: ft.Page):
         except:
             return []
 
-    def get_links(category="All"):
+    def get_links(category="All", search_query=""):
         try:
             conn = sqlite3.connect("nexus.db")
             c = conn.cursor()
-            # UPDATED QUERY: Now fetches lat and lon
-            if category == "All":
-                c.execute("SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links ORDER BY id DESC")
-            else:
-                c.execute("SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links WHERE category=? ORDER BY id DESC", (category,))
+            
+            # Base Query
+            query = "SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links WHERE 1=1"
+            params = []
+
+            # Filter by Category
+            if category != "All":
+                query += " AND category = ?"
+                params.append(category)
+
+            # Filter by Search (Title or AI Summary)
+            if search_query:
+                query += " AND (title LIKE ? OR ai_summary LIKE ?)"
+                wildcard = f"%{search_query}%"
+                params.append(wildcard)
+                params.append(wildcard)
+
+            query += " ORDER BY id DESC"
+            
+            c.execute(query, tuple(params))
             data = c.fetchall()
             conn.close()
             return data
@@ -82,7 +104,7 @@ def main(page: ft.Page):
         refresh_app()
 
     # --- DETAILED SUMMARY MODAL ---
-    def show_summary_dialog(title, summary, lat=None, lon=None):
+    def show_summary_dialog(title, summary, category, lat=None, lon=None):
         content_controls = [
             ft.Markdown(
                 summary, 
@@ -91,7 +113,10 @@ def main(page: ft.Page):
             )
         ]
         
-        if lat and lon:
+        # LOGIC UPDATE: Only show map button if category allows it AND coords exist
+        show_map = (lat and lon) and (category in MAP_RELEVANT_CATEGORIES)
+        
+        if show_map:
             content_controls.insert(0, 
                 ft.Container(
                     content=ft.ElevatedButton(
@@ -117,18 +142,18 @@ def main(page: ft.Page):
     def build_card(row):
         link_id, title, img_url, url, category, ai_summary, lat, lon = row
         
-        # DEBUG: Treat 0.0 as invalid, ensure float
+        # Robust Float Conversion
         try:
             lat = float(lat) if lat is not None else None
             lon = float(lon) if lon is not None else None
         except:
             lat, lon = None, None
 
-        has_geo = lat is not None and lon is not None
+        # LOGIC UPDATE: Strict Category Check for Map Pin
+        has_geo_data = lat is not None and lon is not None
+        is_relevant_cat = category in MAP_RELEVANT_CATEGORIES
+        show_map_pin = has_geo_data and is_relevant_cat
         
-        # DEBUG TEXT: To prove to user if data exists
-        geo_debug_text = f"Lat: {lat:.2f}" if has_geo else "No Geo"
-
         return ft.Card(
             elevation=0,
             content=ft.Container(
@@ -165,15 +190,13 @@ def main(page: ft.Page):
                                             border_radius=4
                                         ),
                                         ft.Container(expand=True),
-                                        # Visual Pin
+                                        # Visual Pin (Conditional)
                                         ft.Row([
                                             ft.Icon(ft.Icons.PIN_DROP, size=14, color="red"),
                                             ft.Text("Map", size=10, color="red", weight="bold")
-                                        ], spacing=2) if has_geo else ft.Container()
+                                        ], spacing=2) if show_map_pin else ft.Container()
                                     ]),
                                     ft.Text(title, weight="bold", size=14, max_lines=2, overflow="ellipsis", color="#1c1e21"),
-                                    # DEBUG: Show coordinates to user (Comment this out later)
-                                    ft.Text(geo_debug_text, size=9, color="grey"),
                                 ]
                             )
                         ),
@@ -186,7 +209,7 @@ def main(page: ft.Page):
                                     ft.TextButton(
                                         "View Note", 
                                         icon=ft.Icons.ANALYTICS_OUTLINED, 
-                                        on_click=lambda e: show_summary_dialog(title, ai_summary, lat, lon)
+                                        on_click=lambda e: show_summary_dialog(title, ai_summary, category, lat, lon)
                                     ) if ai_summary else ft.Container(),
                                     
                                     ft.IconButton(
@@ -204,13 +227,15 @@ def main(page: ft.Page):
         )
 
     def refresh_app():
-        links = get_links(current_category)
+        links = get_links(current_category, current_search)
         grid.controls.clear()
         for row in links:
             grid.controls.append(build_card(row))
         
         if not links:
-            grid.controls.append(ft.Text(f"No links in {current_category}", color="grey"))
+            msg = f"No links in {current_category}"
+            if current_search: msg += f" matching '{current_search}'"
+            grid.controls.append(ft.Text(msg, color="grey"))
         
         update_sidebar()
         page.update()
@@ -255,8 +280,25 @@ def main(page: ft.Page):
             if cat_index < len(cats):
                 current_category = cats[cat_index]
         refresh_app()
+    
+    def on_search(e):
+        nonlocal current_search
+        current_search = e.control.value
+        refresh_app()
 
     rail.on_change = on_nav_change
+
+    # Search Bar Component
+    search_bar = ft.TextField(
+        hint_text="Search titles or AI notes...",
+        prefix_icon=ft.Icons.SEARCH,
+        border_radius=10,
+        bgcolor="white",
+        on_change=on_search,
+        height=40,
+        content_padding=10,
+        text_size=14
+    )
 
     page.add(
         ft.Row(
@@ -265,7 +307,11 @@ def main(page: ft.Page):
                 ft.VerticalDivider(width=1),
                 ft.Column([ 
                     ft.Container(height=20),
-                    ft.Text("Nexus AI", size=24, weight="bold"),
+                    ft.Row([
+                        ft.Text("Nexus AI", size=24, weight="bold"),
+                        ft.Container(expand=True),
+                        ft.Container(width=300, content=search_bar, padding=ft.padding.only(right=20))
+                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ft.Divider(color="transparent", height=10),
                     grid 
                 ], expand=True),
