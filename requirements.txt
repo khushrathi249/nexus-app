@@ -1,4 +1,6 @@
+flet
 python-telegram-bot
 requests
 beautifulsoup4
-flet
+yt-dlp
+google-generativeai

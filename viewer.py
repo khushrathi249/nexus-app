@@ -3,7 +3,7 @@ import sqlite3
 import webbrowser
 
 def main(page: ft.Page):
-    page.title = "Nexus"
+    page.title = "Nexus AI"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
     page.bgcolor = "#f0f2f5"  
@@ -17,7 +17,6 @@ def main(page: ft.Page):
             c.execute("SELECT DISTINCT category FROM links")
             cats = [row[0] for row in c.fetchall()]
             conn.close()
-            
             base_cats = []
             for c in cats:
                 if c and c != "Inbox": 
@@ -31,13 +30,14 @@ def main(page: ft.Page):
             conn = sqlite3.connect("nexus.db")
             c = conn.cursor()
             if category == "All":
-                c.execute("SELECT id, title, image_url, url, category FROM links ORDER BY id DESC")
+                c.execute("SELECT id, title, image_url, url, category, ai_summary FROM links ORDER BY id DESC")
             else:
-                c.execute("SELECT id, title, image_url, url, category FROM links WHERE category=? ORDER BY id DESC", (category,))
+                c.execute("SELECT id, title, image_url, url, category, ai_summary FROM links WHERE category=? ORDER BY id DESC", (category,))
             data = c.fetchall()
             conn.close()
             return data
-        except:
+        except Exception as e:
+            print(e)
             return []
 
     def delete_link_db(link_id):
@@ -47,24 +47,26 @@ def main(page: ft.Page):
         conn.commit()
         conn.close()
 
-    # Define the UI Elements (Empty at first)
+    # --- UI COMPONENTS ---
+    
     grid = ft.GridView(
         expand=True,
-        runs_count=5,          
-        max_extent=300,        
-        child_aspect_ratio=0.75, 
+        runs_count=4,          
+        max_extent=350,        
+        child_aspect_ratio=0.7, 
         spacing=15,
         run_spacing=15,
         padding=20,
     )
-    
+
+    # RE-ADDED MISSING COMPONENT
     rail = ft.NavigationRail(
         selected_index=0,
         label_type=ft.NavigationRailLabelType.ALL,
         min_width=100,
         min_extended_width=200,
         group_alignment=-0.9,
-        destinations=[], # Empty initially
+        destinations=[],
         bgcolor="white"
     )
 
@@ -76,7 +78,28 @@ def main(page: ft.Page):
         refresh_app()
 
     def build_card(row):
-        link_id, title, img_url, url, category = row
+        link_id, title, img_url, url, category, ai_summary = row
+        
+        has_map = ai_summary and "maps.google.com" in ai_summary
+        
+        ai_section = ft.Container()
+        if ai_summary:
+            ai_section = ft.Container(
+                bgcolor="#e3f2fd",
+                padding=10,
+                border_radius=8,
+                margin=ft.margin.only(top=5),
+                content=ft.Column([
+                    ft.Text("✨ Nexus AI Analysis", size=10, weight="bold", color="blue"),
+                    ft.Markdown(
+                        ai_summary, 
+                        selectable=True,
+                        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                        on_tap_link=lambda e: open_url(e.data)
+                    )
+                ])
+            )
+
         return ft.Card(
             elevation=0,
             content=ft.Container(
@@ -101,18 +124,24 @@ def main(page: ft.Page):
                             expand=True,
                             content=ft.Column(
                                 spacing=4,
+                                scroll="hidden",
                                 controls=[
-                                    ft.Text(str(category).upper(), size=10, weight="bold", color="blue"),
-                                    ft.Text(title, weight="bold", size=13, max_lines=2, overflow="ellipsis", color="#1c1e21"),
-                                    ft.Text(url, size=10, color="grey", italic=True, max_lines=1, overflow="ellipsis"),
+                                    ft.Row([
+                                        ft.Text(str(category).upper(), size=10, weight="bold", color="grey"),
+                                        ft.Container(expand=True),
+                                        ft.Icon(ft.Icons.MAP, size=16, color="green") if has_map else ft.Container()
+                                    ]),
+                                    ft.Text(title, weight="bold", size=14, max_lines=2, overflow="ellipsis", color="#1c1e21"),
+                                    ai_section,
                                 ]
                             )
                         ),
                         ft.Container(
                             padding=8,
                             content=ft.Row(
-                                alignment=ft.MainAxisAlignment.END,
+                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                                 controls=[
+                                    ft.TextButton("Open Link", on_click=lambda e: open_url(url)),
                                     ft.IconButton(
                                         icon=ft.Icons.DELETE_OUTLINE_ROUNDED, 
                                         icon_color="#ff4757",
@@ -162,7 +191,6 @@ def main(page: ft.Page):
                 )
             )
         rail.destinations = dests
-        # Only update if the rail is actually on the page
         if rail.page:
             rail.update()
 
@@ -179,13 +207,10 @@ def main(page: ft.Page):
             cat_index = index - 2
             if cat_index < len(cats):
                 current_category = cats[cat_index]
-        
         refresh_app()
 
-    # Link the event handler to the rail
     rail.on_change = on_nav_change
 
-    # --- CRITICAL FIX: ADD TO PAGE *BEFORE* UPDATING DATA ---
     page.add(
         ft.Row(
             [
@@ -193,7 +218,7 @@ def main(page: ft.Page):
                 ft.VerticalDivider(width=1),
                 ft.Column([ 
                     ft.Container(height=20),
-                    ft.Text("Nexus Stacks", size=24, weight="bold"),
+                    ft.Text("Nexus AI", size=24, weight="bold"),
                     ft.Divider(color="transparent", height=10),
                     grid 
                 ], expand=True),
@@ -202,7 +227,6 @@ def main(page: ft.Page):
         )
     )
 
-    # NOW it is safe to load data and update controls
     update_sidebar()
     refresh_app()
 
