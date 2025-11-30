@@ -11,15 +11,20 @@ def main(page: ft.Page):
     current_category = "All" 
 
     def get_categories():
-        conn = sqlite3.connect("nexus.db") # Pointing to new DB
-        c = conn.cursor()
-        c.execute("SELECT DISTINCT category FROM links")
-        cats = [row[0] for row in c.fetchall()]
-        conn.close()
-        base_cats = ["Inbox"]
-        for c in cats:
-            if c != "Inbox": base_cats.append(c)
-        return base_cats
+        try:
+            conn = sqlite3.connect("nexus.db")
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT category FROM links")
+            cats = [row[0] for row in c.fetchall()]
+            conn.close()
+            
+            base_cats = []
+            for c in cats:
+                if c and c != "Inbox": 
+                    base_cats.append(c)
+            return base_cats
+        except:
+            return []
 
     def get_links(category="All"):
         try:
@@ -42,6 +47,7 @@ def main(page: ft.Page):
         conn.commit()
         conn.close()
 
+    # Define the UI Elements (Empty at first)
     grid = ft.GridView(
         expand=True,
         runs_count=5,          
@@ -50,6 +56,16 @@ def main(page: ft.Page):
         spacing=15,
         run_spacing=15,
         padding=20,
+    )
+    
+    rail = ft.NavigationRail(
+        selected_index=0,
+        label_type=ft.NavigationRailLabelType.ALL,
+        min_width=100,
+        min_extended_width=200,
+        group_alignment=-0.9,
+        destinations=[], # Empty initially
+        bgcolor="white"
     )
 
     def open_url(url):
@@ -86,7 +102,7 @@ def main(page: ft.Page):
                             content=ft.Column(
                                 spacing=4,
                                 controls=[
-                                    ft.Text(category.upper(), size=10, weight="bold", color="blue"),
+                                    ft.Text(str(category).upper(), size=10, weight="bold", color="blue"),
                                     ft.Text(title, weight="bold", size=13, max_lines=2, overflow="ellipsis", color="#1c1e21"),
                                     ft.Text(url, size=10, color="grey", italic=True, max_lines=1, overflow="ellipsis"),
                                 ]
@@ -116,34 +132,12 @@ def main(page: ft.Page):
         grid.controls.clear()
         for row in links:
             grid.controls.append(build_card(row))
+        
         if not links:
             grid.controls.append(ft.Text(f"No links in {current_category}", color="grey"))
+        
         update_sidebar()
         page.update()
-
-    def on_nav_change(e):
-        index = e.control.selected_index
-        cats = get_categories()
-        nonlocal current_category
-        if index == 0:
-            current_category = "All"
-        else:
-            cats.insert(0, "Inbox")
-            real_cats = get_categories() 
-            if index - 1 < len(real_cats):
-                current_category = real_cats[index-1]
-        refresh_app()
-
-    rail = ft.NavigationRail(
-        selected_index=0,
-        label_type=ft.NavigationRailLabelType.ALL,
-        min_width=100,
-        min_extended_width=400,
-        group_alignment=-0.9,
-        destinations=[],
-        on_change=on_nav_change,
-        bgcolor="white"
-    )
 
     def update_sidebar():
         dests = [
@@ -151,23 +145,47 @@ def main(page: ft.Page):
                 icon=ft.Icons.DASHBOARD_OUTLINED, 
                 selected_icon=ft.Icons.DASHBOARD_SHARP, 
                 label="All"
+            ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.INBOX_OUTLINED,
+                selected_icon=ft.Icons.INBOX_SHARP,
+                label="Inbox"
             )
         ]
+        
         cats = get_categories() 
         for c in cats:
-            icon = ft.Icons.FOLDER_OUTLINED
-            if c == "Inbox": icon = ft.Icons.INBOX_OUTLINED
             dests.append(
                 ft.NavigationRailDestination(
-                    icon_content=ft.Icon(icon),
+                    icon=ft.Icons.FOLDER_OUTLINED, 
                     label=c
                 )
             )
         rail.destinations = dests
+        # Only update if the rail is actually on the page
+        if rail.page:
+            rail.update()
 
-    update_sidebar()
-    refresh_app()
+    def on_nav_change(e):
+        index = e.control.selected_index
+        cats = get_categories()
+        nonlocal current_category
+        
+        if index == 0:
+            current_category = "All"
+        elif index == 1:
+            current_category = "Inbox"
+        else:
+            cat_index = index - 2
+            if cat_index < len(cats):
+                current_category = cats[cat_index]
+        
+        refresh_app()
 
+    # Link the event handler to the rail
+    rail.on_change = on_nav_change
+
+    # --- CRITICAL FIX: ADD TO PAGE *BEFORE* UPDATING DATA ---
     page.add(
         ft.Row(
             [
@@ -183,5 +201,9 @@ def main(page: ft.Page):
             expand=True,
         )
     )
+
+    # NOW it is safe to load data and update controls
+    update_sidebar()
+    refresh_app()
 
 ft.app(target=main)
