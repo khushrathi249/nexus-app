@@ -34,39 +34,23 @@ def load_image_proxy(url):
 
 @st.cache_resource
 def get_db_pool():
-    """
-    Creates a Threaded Connection Pool.
-    Cached resource: The POOL persists, but individual connections are borrowed/returned.
-    """
     if not DATABASE_URL:
         st.error("CRITICAL: DATABASE_URL is missing.")
         return None
     try:
-        # Create a pool with min 1, max 10 connections
-        return psycopg2.pool.ThreadedConnectionPool(
-            1, 10,
-            dsn=DATABASE_URL,
-            sslmode='require'
-        )
+        return psycopg2.pool.ThreadedConnectionPool(1, 10, dsn=DATABASE_URL, sslmode='require')
     except Exception as e:
         st.error(f"Failed to connect to Database: {e}")
         return None
 
 def run_query(query, params=None):
-    """
-    Safe query execution using the pool.
-    Auto-commits for write operations. Returns data for SELECTs.
-    """
     db_pool = get_db_pool()
     if not db_pool: return None
-    
     conn = None
     try:
-        # Borrow connection
         conn = db_pool.getconn()
         with conn.cursor() as cur:
             cur.execute(query, params)
-            
             if query.strip().upper().startswith("SELECT"):
                 result = cur.fetchall()
                 return result
@@ -74,20 +58,21 @@ def run_query(query, params=None):
                 conn.commit()
                 return True
     except Exception as e:
-        # Don't show confusing DB errors to user, just log console
         print(f"DB Query Error: {e}") 
         return None
     finally:
-        # CRITICAL: Always return connection to pool
-        if db_pool and conn:
-            db_pool.putconn(conn)
+        if db_pool and conn: db_pool.putconn(conn)
 
-def check_login(user_id, password):
+def login_user(username, password):
     hashed = hashlib.sha256(password.encode()).hexdigest()
-    res = run_query("SELECT password_hash FROM users WHERE user_id = %s", (user_id,))
-    if res and res[0][0] == hashed:
-        return True
-    return False
+    # UPDATED: Select user_id where username and password match
+    res = run_query("SELECT user_id, password_hash FROM users WHERE username = %s", (username,))
+    
+    if res:
+        db_id, db_hash = res[0]
+        if db_hash == hashed:
+            return db_id # Return the internal ID on success
+    return None
 
 # --- SESSION STATE ---
 if 'user_id' not in st.session_state:
@@ -100,17 +85,19 @@ def show_login():
     st.write("Your Second Brain")
     
     with st.form("login_form"):
-        uid = st.text_input("User ID", placeholder="Enter your Telegram ID")
-        pwd = st.text_input("Password", type="password", placeholder="Enter your secret key")
+        # CHANGED: Input label to Username
+        uname = st.text_input("Username", placeholder="The name you set in Telegram")
+        pwd = st.text_input("Password", type="password")
         
         submitted = st.form_submit_button("Login", use_container_width=True)
         
         if submitted:
-            if check_login(uid, pwd):
-                st.session_state.user_id = uid
+            user_id = login_user(uname, pwd)
+            if user_id:
+                st.session_state.user_id = user_id
                 st.rerun()
             else:
-                st.error("Invalid Credentials. Check your ID and Password.")
+                st.error("Invalid Username or Password.")
 
 def show_dashboard():
     # --- HEADER ---
@@ -130,7 +117,7 @@ def show_dashboard():
     with col_search:
         search_q = st.text_input("Search", placeholder="Search titles, notes...", label_visibility="collapsed")
     with col_cat:
-        # Fetch categories dynamically
+        # Fetch categories dynamically using the INTERNAL user_id
         cats_raw = run_query("SELECT DISTINCT category FROM links WHERE user_id = %s", (st.session_state.user_id,))
         cats = ["All"]
         if cats_raw:
@@ -155,16 +142,14 @@ def show_dashboard():
     rows = run_query(query, tuple(params))
     
     if not rows:
-        st.info("No links found. Send a reel to your Telegram bot to get started.")
+        st.info("No links found. Register via the Telegram Bot first!")
         return
 
     # --- CLIENT SIDE SEARCH ---
     filtered = []
     for r in rows:
-        # 1=title, 5=summary
         title_match = search_q.lower() in r[1].lower() if r[1] else False
         summary_match = search_q.lower() in r[5].lower() if r[5] else False
-        
         if not search_q or title_match or summary_match:
             filtered.append(r)
 
@@ -176,7 +161,7 @@ def show_dashboard():
         
         with cols[i % 2]:
             with st.container(border=True):
-                # 1. Image Cover (Proxy Method)
+                # 1. Image Cover
                 if img_url:
                     img_data = load_image_proxy(img_url)
                     if img_data:
@@ -210,7 +195,7 @@ def show_dashboard():
                     else:
                         st.button("📝", disabled=True, key=f"no_note_{link_id}", use_container_width=True)
                 
-                # 4. Delete (Full Width below)
+                # 4. Delete
                 if st.button("🗑️ Remove", key=f"del_{link_id}", use_container_width=True):
                     run_query("DELETE FROM links WHERE id = %s", (link_id,))
                     st.toast("Item removed.")

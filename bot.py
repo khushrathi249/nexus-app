@@ -9,14 +9,31 @@ import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# --- 1. HEALTH CHECK SERVER (MUST START FIRST) ---
-# This ensures Render sees the app as "Live" even if the bot crashes later.
+# --- CUSTOM MODULES ---
+import database
+import geo
+import ai_engine
+import scraper
+
+# --- SECRET MANAGEMENT ---
+try:
+    from config import TELEGRAM_BOT_TOKEN
+except ImportError:
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# URL for the viewer (Set this in Render Env Vars)
+VIEWER_URL = os.getenv("VIEWER_URL", "https://your-app-name.onrender.com")
+
+if not TELEGRAM_BOT_TOKEN:
+    print("❌ CRITICAL: TELEGRAM_BOT_TOKEN missing.")
+
+# --- HEALTH CHECK ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Nexus Bot is Alive")
-    def log_message(self, format, *args): pass # Silence logs
+    def log_message(self, format, *args): pass 
 
 def start_health_server():
     try:
@@ -29,59 +46,78 @@ def start_health_server():
         print(f"❌ Failed to start health server: {e}")
         sys.stdout.flush()
 
-# Start Health Check IMMEDIATELY in background
 threading.Thread(target=start_health_server, daemon=True).start()
 
-# --- 2. ROBUST IMPORT LOADING ---
-# We try to import modules. If they fail (due to missing env vars in settings.py),
-# we catch the error so the container doesn't crash.
-modules_loaded = False
+# --- MODULE IMPORT CHECK ---
 try:
     import database
     import geo
     import ai_engine
     import scraper
-    
-    # Try importing Token from config or env
-    try:
-        from config import TELEGRAM_BOT_TOKEN
-    except ImportError:
-        TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-        
     modules_loaded = True
 except Exception as e:
-    print(f"❌ CRITICAL IMPORT ERROR: {e}")
-    print("⚠️ Bot functionality will be disabled, but server stays alive for debugging.")
-    TELEGRAM_BOT_TOKEN = None
-    sys.stdout.flush()
+    print(f"❌ IMPORT ERROR: {e}")
+    modules_loaded = False
 
 # --- ERROR HANDLER ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"❌ Update Error: {context.error}")
     sys.stdout.flush()
 
-# --- HANDLERS ---
+# --- COMMAND HANDLERS ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id, 
-        text=f"🧠 **Nexus Online**\n\nYour ID: `{user_id}`\n\n1. Send Link to Save\n2. Set Password: `/password your123`\n3. Login to Viewer with ID + Password", 
-        parse_mode='Markdown'
+    msg = (
+        f"🧠 **Nexus Online**\n\n"
+        f"1. **Register:** `/register [username] [password]`\n"
+        f"2. **Save:** Send any Link\n"
+        f"3. **View:** `/site` to get your link\n"
+        f"4. **Change Pass:** `/password [new_pass]`"
     )
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=msg, parse_mode='Markdown')
 
-async def set_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not context.args:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Usage: `/password [your_secret]`", parse_mode='Markdown')
+    if len(context.args) < 2:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Usage: `/register [username] [password]`")
         return
     
-    password = context.args[0]
-    success = await asyncio.to_thread(database.set_password, user_id, password)
+    username = context.args[0]
+    password = context.args[1]
+    
+    # Run DB operation in thread
+    success, msg = await asyncio.to_thread(database.register_user, user_id, username, password)
     
     if success:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ **Password Set!**\nYou can now log in to the Nexus Viewer.")
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id, 
+            text=f"✅ **Account Set!**\nUser: `{username}`\nPass: `{password}`\n\nLogin here: {VIEWER_URL}",
+            parse_mode='Markdown'
+        )
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error setting password.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ {msg}")
+
+async def site_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, 
+        text=f"🌐 **Open Viewer:**\n{VIEWER_URL}",
+        disable_web_page_preview=True
+    )
+
+async def password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Usage: `/password [new_password]`")
+        return
+    
+    new_pass = context.args[0]
+    success = await asyncio.to_thread(database.update_password, user_id, new_pass)
+    
+    if success:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Password Updated.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Account not found. Use `/register` first.")
 
 async def geotest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
@@ -90,6 +126,8 @@ async def geotest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lat, lon = await asyncio.to_thread(geo.get_best_coordinates, city)
     if lat and lon: await context.bot.send_location(chat_id=update.effective_chat.id, latitude=lat, longitude=lon)
     else: await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Failed.")
+
+# --- MESSAGE HANDLERS ---
 
 async def handle_chat_query(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     user_id = update.effective_user.id
@@ -173,7 +211,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Saved: {data['title']}")
 
 if __name__ == '__main__':
-    # 3. SAFE STARTUP
     if modules_loaded and TELEGRAM_BOT_TOKEN:
         try:
             print("🔄 Connecting to Database...")
@@ -182,8 +219,12 @@ if __name__ == '__main__':
             
             application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
             application.add_error_handler(error_handler)
+            
+            # Register Handlers
             application.add_handler(CommandHandler('start', start))
-            application.add_handler(CommandHandler('password', set_password_command))
+            application.add_handler(CommandHandler('register', register_command)) # NEW
+            application.add_handler(CommandHandler('password', password_command))
+            application.add_handler(CommandHandler('site', site_command)) # NEW
             application.add_handler(CommandHandler('geotest', geotest))
             application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
             
@@ -193,10 +234,8 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"❌ Runtime Error: {e}")
             sys.stdout.flush()
-            # Keep alive for Render logs
             while True: time.sleep(10)
     else:
-        print("❌ Bot Configuration Failed. Check environment variables.")
+        print("❌ Bot Configuration Failed.")
         sys.stdout.flush()
-        # Keep alive for Render logs
         while True: time.sleep(10)

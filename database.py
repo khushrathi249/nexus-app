@@ -1,6 +1,5 @@
 import psycopg2
 import hashlib
-import os
 from settings import DATABASE_URL
 
 def get_connection():
@@ -27,8 +26,7 @@ def init_db():
         );
     ''')
     
-    # 2. Users Table (New)
-    # Stores Telegram ID and Hashed Password
+    # 2. Users Table
     c.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -36,49 +34,86 @@ def init_db():
         );
     ''')
     
+    # 3. Migration: Add username column if it doesn't exist
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN username TEXT UNIQUE")
+    except psycopg2.errors.DuplicateColumn:
+        conn.rollback() # Column exists, ignore
+    except Exception as e:
+        print(f"Migration Note: {e}")
+        conn.rollback()
+    
     conn.commit()
     conn.close()
 
 # --- AUTHENTICATION ---
 
 def hash_password(password):
-    # Simple SHA256 hash (For a prototype, this is sufficient. 
-    # For production, use bcrypt/argon2)
     return hashlib.sha256(password.encode()).hexdigest()
 
-def set_password(user_id, plain_password):
+def register_user(user_id, username, plain_password):
+    """
+    Sets username and password for a Telegram ID.
+    Returns: (Success: bool, Message: str)
+    """
     conn = get_connection()
     c = conn.cursor()
     hashed = hash_password(plain_password)
+    
     try:
-        # Upsert: Insert or Update if exists
+        # Check if username is taken by SOMEONE ELSE
+        c.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+        existing = c.fetchone()
+        if existing and existing[0] != user_id:
+            return False, "Username already taken."
+
+        # Upsert (Insert or Update)
         c.execute("""
-            INSERT INTO users (user_id, password_hash) 
-            VALUES (%s, %s)
+            INSERT INTO users (user_id, username, password_hash) 
+            VALUES (%s, %s, %s)
             ON CONFLICT (user_id) 
-            DO UPDATE SET password_hash = EXCLUDED.password_hash
-        """, (user_id, hashed))
+            DO UPDATE SET username = EXCLUDED.username, password_hash = EXCLUDED.password_hash
+        """, (user_id, username, hashed))
         conn.commit()
-        return True
+        return True, "Account updated successfully."
     except Exception as e:
-        print(f"Auth Error: {e}")
-        return False
+        return False, f"Error: {e}"
     finally:
         conn.close()
 
-def check_login(user_id, plain_password):
+def login_user(username, plain_password):
+    """
+    Checks credentials and returns the Telegram USER_ID if valid.
+    This allows the viewer to load the correct data.
+    """
     conn = get_connection()
     c = conn.cursor()
     hashed = hash_password(plain_password)
     try:
-        c.execute("SELECT password_hash FROM users WHERE user_id = %s", (user_id,))
+        c.execute("SELECT user_id, password_hash FROM users WHERE username = %s", (username,))
         result = c.fetchone()
-        if result and result[0] == hashed:
-            return True
-        return False
+        
+        if result:
+            db_id, db_hash = result
+            if db_hash == hashed:
+                return db_id # Login Success: Return the internal ID
+        return None # Login Failed
     except Exception as e:
         print(f"Login Error: {e}")
-        return False
+        return None
+    finally:
+        conn.close()
+
+def update_password(user_id, new_password):
+    conn = get_connection()
+    c = conn.cursor()
+    hashed = hash_password(new_password)
+    try:
+        c.execute("UPDATE users SET password_hash = %s WHERE user_id = %s", (hashed, user_id))
+        if c.rowcount == 0:
+            return False # User doesn't exist yet
+        conn.commit()
+        return True
     finally:
         conn.close()
 
