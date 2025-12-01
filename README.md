@@ -1,4 +1,4 @@
-🧠 #Nexus - Your Second Brain for Social Content
+🧠 Nexus - Your Second Brain for Social Content
 
 Nexus is a self-hosted, AI-powered bookmarking tool designed to organize the chaos of social media saves. It takes links (Instagram Reels, TikToks, YouTube Shorts) sent via Telegram, downloads the video content, and uses Multimodal AI (Gemini 2.0) to watch, listen, and analyze them.
 
