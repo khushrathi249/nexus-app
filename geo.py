@@ -1,11 +1,6 @@
 import requests
 from geopy.geocoders import Nominatim
-
-# Try to import API key safely
-try:
-    from config import OLA_MAPS_API_KEY
-except ImportError:
-    OLA_MAPS_API_KEY = None
+from settings import OLA_MAPS_API_KEY # UPDATED IMPORT
 
 def get_coordinates_ola(location_name):
     if not OLA_MAPS_API_KEY: return None, None
@@ -40,10 +35,8 @@ def get_coordinates_osm(location_name):
     return None, None
 
 def get_best_coordinates(location_name):
-    # 1. Ola
     lat, lon = get_coordinates_ola(location_name)
     if lat and lon: return lat, lon
-    # 2. OSM Fallback
     lat, lon = get_coordinates_osm(location_name)
     if lat and lon: return lat, lon
     return None, None

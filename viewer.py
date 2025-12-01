@@ -1,326 +1,195 @@
-import flet as ft
-import sqlite3
-import webbrowser
+import streamlit as st
+import psycopg2
+import hashlib
+import time
+import requests
+from io import BytesIO
+from settings import DATABASE_URL
 
-def main(page: ft.Page):
-    page.title = "Nexus AI Viewer"
-    page.theme_mode = ft.ThemeMode.LIGHT
-    page.padding = 0
-    page.bgcolor = "#f0f2f5"  
+# 1. Page Config
+st.set_page_config(
+    page_title="Nexus", 
+    page_icon="🧠", 
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
+
+# 2. IMAGE PROXY HELPER (NEW)
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_image_proxy(url):
+    """
+    Fetches image on the server side to bypass browser referrer blocking.
+    Cached for 1 hour to improve performance.
+    """
+    if not url: return None
+    try:
+        # Headers to look like a real browser visiting Instagram
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.instagram.com/'
+        }
+        response = requests.get(url, headers=headers, timeout=3)
+        if response.status_code == 200:
+            return BytesIO(response.content)
+    except:
+        pass
+    return None
+
+# --- DATABASE HELPERS ---
+@st.cache_resource
+def get_connection():
+    if not DATABASE_URL: return None
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
+
+def run_query(query, params=None):
+    conn = get_connection()
+    if not conn: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            if query.strip().upper().startswith("SELECT"):
+                return cur.fetchall()
+            else:
+                conn.commit()
+                return True
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+        return None
+
+def check_login(user_id, password):
+    hashed = hashlib.sha256(password.encode()).hexdigest()
+    res = run_query("SELECT password_hash FROM users WHERE user_id = %s", (user_id,))
+    if res and res[0][0] == hashed:
+        return True
+    return False
+
+# --- SESSION STATE ---
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+
+# --- VIEWS ---
+
+def show_login():
+    st.title("🧠 Nexus")
+    st.write("Your Second Brain")
     
-    # State
-    current_category = "All" 
-    current_search = ""
+    with st.form("login_form"):
+        uid = st.text_input("User ID", placeholder="Enter your Telegram ID")
+        pwd = st.text_input("Password", type="password", placeholder="Enter your secret key")
+        
+        submitted = st.form_submit_button("Login", use_container_width=True)
+        
+        if submitted:
+            if check_login(uid, pwd):
+                st.session_state.user_id = uid
+                st.rerun()
+            else:
+                st.error("Invalid Credentials. Check your bot settings.")
 
-    # --- CONSTANTS ---
-    # Only show map UI for these categories
-    MAP_RELEVANT_CATEGORIES = ["Travel", "Food", "Recipe", "Restaurant", "Event", "Hiking", "Inbox"]
+def show_dashboard():
+    # --- HEADER ---
+    # Layout: Title | Refresh | Logout
+    c1, c2, c3 = st.columns([5, 1, 1])
+    with c1:
+        st.header("My Stacks")
+    with c2:
+        if st.button("🔄", help="Refresh Data"):
+            st.rerun()
+    with c3:
+        if st.button("Logout"):
+            st.session_state.user_id = None
+            st.rerun()
 
-    # --- DATABASE FUNCTIONS ---
-    def get_categories():
-        try:
-            conn = sqlite3.connect("nexus.db")
-            c = conn.cursor()
-            c.execute("SELECT DISTINCT category FROM links")
-            cats = [row[0] for row in c.fetchall()]
-            conn.close()
-            base_cats = []
-            for c in cats:
-                if c and c != "Inbox" and c != "All": 
-                    base_cats.append(c)
-            return sorted(base_cats)
-        except:
-            return []
+    # --- FILTERS ---
+    col_search, col_cat = st.columns([2, 1])
+    with col_search:
+        search_q = st.text_input("Search", placeholder="Search titles, notes...", label_visibility="collapsed")
+    with col_cat:
+        # Fetch categories dynamically
+        cats_raw = run_query("SELECT DISTINCT category FROM links WHERE user_id = %s", (st.session_state.user_id,))
+        cats = ["All"] + sorted([c[0] for c in cats_raw if c[0] not in ["All", "Inbox"]])
+        selected_cat = st.selectbox("Category", cats, label_visibility="collapsed")
 
-    def get_links(category="All", search_query=""):
-        try:
-            conn = sqlite3.connect("nexus.db")
-            c = conn.cursor()
-            
-            # Base Query
-            query = "SELECT id, title, image_url, url, category, ai_summary, lat, lon FROM links WHERE 1=1"
-            params = []
+    st.divider()
 
-            # Filter by Category
-            if category != "All":
-                query += " AND category = ?"
-                params.append(category)
+    # --- DATA FETCH ---
+    query = """
+        SELECT id, title, image_url, url, category, ai_summary, lat, lon 
+        FROM links WHERE user_id = %s
+    """
+    params = [st.session_state.user_id]
 
-            # Filter by Search (Title or AI Summary)
-            if search_query:
-                query += " AND (title LIKE ? OR ai_summary LIKE ?)"
-                wildcard = f"%{search_query}%"
-                params.append(wildcard)
-                params.append(wildcard)
-
-            query += " ORDER BY id DESC"
-            
-            c.execute(query, tuple(params))
-            data = c.fetchall()
-            conn.close()
-            return data
-        except Exception as e:
-            print(f"DB Error: {e}")
-            return []
-
-    def delete_link_db(link_id):
-        conn = sqlite3.connect("nexus.db")
-        c = conn.cursor()
-        c.execute("DELETE FROM links WHERE id=?", (link_id,))
-        conn.commit()
-        conn.close()
-
-    # --- UI COMPONENTS ---
+    if selected_cat != "All":
+        query += " AND category = %s"
+        params.append(selected_cat)
     
-    grid = ft.GridView(
-        expand=True,
-        runs_count=4,          
-        max_extent=350,        
-        child_aspect_ratio=0.7, 
-        spacing=15,
-        run_spacing=15,
-        padding=20,
-    )
+    query += " ORDER BY id DESC"
+    
+    rows = run_query(query, tuple(params))
+    
+    if not rows:
+        st.info("No links found. Send a reel to your Telegram bot to get started.")
+        return
 
-    rail = ft.NavigationRail(
-        selected_index=0,
-        label_type=ft.NavigationRailLabelType.ALL,
-        min_width=100,
-        min_extended_width=200,
-        group_alignment=-0.9,
-        destinations=[],
-        bgcolor="white"
-    )
+    # --- CLIENT SIDE SEARCH ---
+    filtered = []
+    for r in rows:
+        # 1=title, 5=summary
+        if search_q.lower() in r[1].lower() or (r[5] and search_q.lower() in r[5].lower()):
+            filtered.append(r)
 
-    def open_url(url):
-        webbrowser.open(url)
-        
-    def open_map(lat, lon):
-        if lat and lon:
-            webbrowser.open(f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
-
-    def delete_click(e, link_id):
-        delete_link_db(link_id)
-        refresh_app()
-
-    # --- DETAILED SUMMARY MODAL ---
-    def show_summary_dialog(title, summary, category, lat=None, lon=None):
-        content_controls = [
-            ft.Markdown(
-                summary, 
-                selectable=True,
-                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB
-            )
-        ]
-        
-        # LOGIC UPDATE: Only show map button if category allows it AND coords exist
-        show_map = (lat and lon) and (category in MAP_RELEVANT_CATEGORIES)
-        
-        if show_map:
-            content_controls.insert(0, 
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "Open Location in Google Maps",
-                        icon=ft.Icons.MAP,
-                        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_100, color=ft.Colors.GREEN_800),
-                        on_click=lambda e: open_map(lat, lon)
-                    ),
-                    padding=ft.padding.only(bottom=10)
-                )
-            )
-
-        dlg = ft.AlertDialog(
-            title=ft.Text(title, size=20, weight="bold"),
-            content=ft.Container(
-                width=500,
-                height=400,
-                content=ft.Column(content_controls, scroll="adaptive")
-            ),
-        )
-        page.open(dlg)
-
-    def build_card(row):
+    # --- GRID LAYOUT ---
+    cols = st.columns(2)
+    
+    for i, row in enumerate(filtered):
         link_id, title, img_url, url, category, ai_summary, lat, lon = row
         
-        # Robust Float Conversion
-        try:
-            lat = float(lat) if lat is not None else None
-            lon = float(lon) if lon is not None else None
-        except:
-            lat, lon = None, None
+        with cols[i % 2]:
+            with st.container(border=True):
+                # 1. Image Cover (Proxy Method)
+                if img_url:
+                    img_data = load_image_proxy(img_url)
+                    if img_data:
+                        st.image(img_data, use_container_width=True)
+                    else:
+                        # Fallback UI if image is expired or blocked
+                        st.warning("Image Expired")
+                else:
+                    st.markdown('<div style="height:150px; background-color:#f0f2f6; border-radius: 5px 5px 0 0; margin-bottom: 10px;"></div>', unsafe_allow_html=True)
+                
+                # 2. Metadata
+                st.caption(f"📂 {category}")
+                st.markdown(f"**[{title}]({url})**")
 
-        # LOGIC UPDATE: Strict Category Check for Map Pin
-        has_geo_data = lat is not None and lon is not None
-        is_relevant_cat = category in MAP_RELEVANT_CATEGORIES
-        show_map_pin = has_geo_data and is_relevant_cat
-        
-        return ft.Card(
-            elevation=0,
-            content=ft.Container(
-                bgcolor="white",
-                border_radius=12,
-                content=ft.Column(
-                    spacing=0,
-                    controls=[
-                        # Image Section
-                        ft.Container(
-                            height=150,
-                            content=ft.Image(
-                                src=img_url if img_url else "https://placehold.co/600x400",
-                                width=float("inf"),
-                                height=150,
-                                fit=ft.ImageFit.COVER,
-                                border_radius=ft.border_radius.only(top_left=12, top_right=12),
-                            ),
-                            on_click=lambda e: open_url(url)
-                        ),
-                        # Text Content
-                        ft.Container(
-                            padding=12,
-                            expand=True,
-                            content=ft.Column(
-                                spacing=4,
-                                scroll="hidden",
-                                controls=[
-                                    ft.Row([
-                                        ft.Container(
-                                            content=ft.Text(str(category).upper(), size=10, weight="bold", color="white"),
-                                            bgcolor="blue" if category != "Inbox" else "grey",
-                                            padding=ft.padding.symmetric(horizontal=6, vertical=2),
-                                            border_radius=4
-                                        ),
-                                        ft.Container(expand=True),
-                                        # Visual Pin (Conditional)
-                                        ft.Row([
-                                            ft.Icon(ft.Icons.PIN_DROP, size=14, color="red"),
-                                            ft.Text("Map", size=10, color="red", weight="bold")
-                                        ], spacing=2) if show_map_pin else ft.Container()
-                                    ]),
-                                    ft.Text(title, weight="bold", size=14, max_lines=2, overflow="ellipsis", color="#1c1e21"),
-                                ]
-                            )
-                        ),
-                        # Action Buttons
-                        ft.Container(
-                            padding=10,
-                            content=ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                controls=[
-                                    ft.TextButton(
-                                        "View Note", 
-                                        icon=ft.Icons.ANALYTICS_OUTLINED, 
-                                        on_click=lambda e: show_summary_dialog(title, ai_summary, category, lat, lon)
-                                    ) if ai_summary else ft.Container(),
-                                    
-                                    ft.IconButton(
-                                        icon=ft.Icons.DELETE_OUTLINE_ROUNDED, 
-                                        icon_color="#ff4757",
-                                        icon_size=18,
-                                        on_click=lambda e: delete_click(e, link_id)
-                                    )
-                                ]
-                            )
-                        )
-                    ]
-                )
-            )
-        )
+                # 3. Action Row
+                c_btn1, c_btn2, c_btn3 = st.columns([1, 1, 1])
+                
+                with c_btn1:
+                    st.link_button("🔗", url, help="Open Link", use_container_width=True)
+                
+                with c_btn2:
+                    if lat and lon:
+                        st.link_button("📍", f"https://www.google.com/maps/search/?api=1&query={lat},{lon}", help="Open Map", use_container_width=True)
+                    else:
+                        st.button("📍", disabled=True, key=f"no_map_{link_id}", use_container_width=True)
 
-    def refresh_app():
-        links = get_links(current_category, current_search)
-        grid.controls.clear()
-        for row in links:
-            grid.controls.append(build_card(row))
-        
-        if not links:
-            msg = f"No links in {current_category}"
-            if current_search: msg += f" matching '{current_search}'"
-            grid.controls.append(ft.Text(msg, color="grey"))
-        
-        update_sidebar()
-        page.update()
+                with c_btn3:
+                    if ai_summary:
+                        with st.popover("📝", use_container_width=True):
+                            st.caption("Nexus Analysis")
+                            st.markdown(ai_summary)
+                    else:
+                        st.button("📝", disabled=True, key=f"no_note_{link_id}", use_container_width=True)
+                
+                # 4. Delete (Full Width below)
+                if st.button("🗑️ Remove", key=f"del_{link_id}", use_container_width=True):
+                    run_query("DELETE FROM links WHERE id = %s", (link_id,))
+                    st.toast("Item removed.")
+                    time.sleep(0.5)
+                    st.rerun()
 
-    def update_sidebar():
-        dests = [
-            ft.NavigationRailDestination(
-                icon=ft.Icons.DASHBOARD_OUTLINED, 
-                selected_icon=ft.Icons.DASHBOARD_SHARP, 
-                label="All"
-            ),
-        ]
-        
-        cats = get_categories() 
-        for c in cats:
-            icon = ft.Icons.FOLDER_OUTLINED
-            if c == "Recipe": icon = ft.Icons.RESTAURANT
-            elif c == "Travel": icon = ft.Icons.AIRPLANE_TICKET
-            elif c == "Tech": icon = ft.Icons.COMPUTER
-            elif c == "Education": icon = ft.Icons.SCHOOL
-            elif c == "Fitness": icon = ft.Icons.FITNESS_CENTER
-            
-            dests.append(
-                ft.NavigationRailDestination(
-                    icon=icon, 
-                    label=c
-                )
-            )
-        rail.destinations = dests
-        if rail.page:
-            rail.update()
-
-    def on_nav_change(e):
-        index = e.control.selected_index
-        cats = get_categories()
-        nonlocal current_category
-        
-        if index == 0:
-            current_category = "All"
-        else:
-            cat_index = index - 1
-            if cat_index < len(cats):
-                current_category = cats[cat_index]
-        refresh_app()
-    
-    def on_search(e):
-        nonlocal current_search
-        current_search = e.control.value
-        refresh_app()
-
-    rail.on_change = on_nav_change
-
-    # Search Bar Component
-    search_bar = ft.TextField(
-        hint_text="Search titles or AI notes...",
-        prefix_icon=ft.Icons.SEARCH,
-        border_radius=10,
-        bgcolor="white",
-        on_change=on_search,
-        height=40,
-        content_padding=10,
-        text_size=14
-    )
-
-    page.add(
-        ft.Row(
-            [
-                rail,
-                ft.VerticalDivider(width=1),
-                ft.Column([ 
-                    ft.Container(height=20),
-                    ft.Row([
-                        ft.Text("Nexus AI", size=24, weight="bold"),
-                        ft.Container(expand=True),
-                        ft.Container(width=300, content=search_bar, padding=ft.padding.only(right=20))
-                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                    ft.Divider(color="transparent", height=10),
-                    grid 
-                ], expand=True),
-            ],
-            expand=True,
-        )
-    )
-
-    update_sidebar()
-    refresh_app()
-
-ft.app(target=main)
+# --- MAIN APP ---
+if st.session_state.user_id:
+    show_dashboard()
+else:
+    show_login()

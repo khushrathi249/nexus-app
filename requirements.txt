@@ -1,6 +1,10 @@
-flet
 python-telegram-bot
 requests
 beautifulsoup4
 yt-dlp
 google-generativeai
+geopy
+psycopg2-binary
+flet
+pillow
+streamlit

@@ -18,11 +18,26 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="🧠 **Nexus Online**\n\n- Send Link: Save & Analyze\n- Send Text: Search & Chat", 
+        text=f"🧠 **Nexus Online**\n\nYour ID: `{user_id}`\n\n1. Send Link to Save\n2. Set Password: `/password your123`\n3. Login to Viewer with ID + Password", 
         parse_mode='Markdown'
     )
+
+async def set_password_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not context.args:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Usage: `/password [your_secret]`", parse_mode='Markdown')
+        return
+    
+    password = context.args[0]
+    success = await asyncio.to_thread(database.set_password, user_id, password)
+    
+    if success:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ **Password Set!**\nYou can now log in to the Nexus Viewer.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Error setting password.")
 
 async def geotest(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return
@@ -36,21 +51,18 @@ async def handle_chat_query(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     user_id = update.effective_user.id
     status_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text="🔍 **Searching Nexus...**", parse_mode='Markdown')
     
-    # 1. Search DB
     results = await asyncio.to_thread(database.search_nexus_memory, user_id, query)
     
     if not results:
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=f"❌ No matching links found.")
         return
 
-    # 2. Build Context
     context_text = "Database Results:\n\n"
     for i, row in enumerate(results):
         title, summary, category, url, lat, lon = row
         loc_info = f"(Location: {lat}, {lon})" if lat else ""
         context_text += f"ITEM {i+1}:\nTitle: {title}\nCategory: {category}\nSummary: {summary}\nURL: {url} {loc_info}\n\n"
 
-    # 3. Generate Answer
     answer = await asyncio.to_thread(ai_engine.generate_rag_answer, query, context_text)
     await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text=answer)
 
@@ -59,12 +71,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id 
     url_match = re.search(r'(https?://\S+)', text)
     
-    # Not a link? It's a chat query.
     if not url_match:
         await handle_chat_query(update, context, text)
         return
 
-    # It's a link.
     url = url_match.group(0)
     if database.is_duplicate(url, user_id):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="⚠️ Already Saved.")
@@ -73,7 +83,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: status_msg = await context.bot.send_message(chat_id=update.effective_chat.id, text="📥 **Downloading...**")
     except: return 
 
-    # 1. Download
     data = await asyncio.to_thread(scraper.download_and_scrape_blocking, url)
     
     lat, lon = None, None
@@ -83,25 +92,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status_msg.message_id, text="🧠 **Watching...**")
         except: pass 
 
-        # 2. Analyze
         ai_summary, ai_category, location_str, ai_coords = await asyncio.to_thread(
             ai_engine.analyze_with_video_blocking, 
             data['video_path'], data['title'], data['description'], data['url']
         )
         
-        # 3. Geocode
         if location_str:
             lat, lon = await asyncio.to_thread(geo.get_best_coordinates, location_str)
             if not lat and ai_coords: lat, lon = ai_coords
         
-        # Cleanup
         try: os.remove(data['video_path'])
         except: pass
     else:
-        ai_summary, ai_category = ("⚠️ Download failed.", "Inbox")
+        # Restricted content fallback
+        ai_summary, ai_category = ("⚠️ Restricted/Unreachable content.", "Inbox")
 
-    # 4. Save
-    # Prepare data dict
     save_data = {
         'url': data['url'], 'title': data['title'], 'image': data['image'],
         'ai_summary': ai_summary, 'category': ai_category, 'user_id': user_id,
@@ -109,7 +114,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     database.save_link(save_data)
 
-    # 5. Reply
     try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=status_msg.message_id)
     except: pass
     
@@ -130,6 +134,7 @@ if __name__ == '__main__':
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
     application.add_error_handler(error_handler)
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('password', set_password_command)) # NEW
     application.add_handler(CommandHandler('geotest', geotest))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     print("Nexus Modular Bot is online...")

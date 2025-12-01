@@ -2,12 +2,12 @@ import google.generativeai as genai
 import time
 import re
 import os
+from settings import GEMINI_API_KEY # UPDATED IMPORT
 
 try:
-    from config import GEMINI_API_KEY
     genai.configure(api_key=GEMINI_API_KEY)
 except ImportError:
-    print("CRITICAL: GEMINI_API_KEY missing in config.py")
+    print("CRITICAL: GEMINI_API_KEY missing.")
 
 def get_working_model():
     models_to_try = ['gemini-2.0-flash', 'gemini-2.5-flash-lite']
@@ -43,7 +43,7 @@ def analyze_with_video_blocking(video_path, title, description, url):
     video_file = upload_to_gemini_blocking(video_path, mime_type="video/mp4")
     if not video_file: return ("⚠️ Video processing failed.", "Inbox", None, None)
 
-    # ROBUST PROMPT WITH 'INBOX' FALLBACK
+    # ROBUST PROMPT FOR ALL CATEGORIES
     prompt = f"""
     Analyze this social media post (Video + Text).
     
@@ -90,7 +90,6 @@ def analyze_with_video_blocking(video_path, title, description, url):
         
         category, location_str, ai_coords, summary = "Inbox", None, None, text
         
-        # Robust regex for Category
         match = re.search(r'CATEGORY:\s*(.+)', text, re.IGNORECASE)
         if match: 
             raw_cat = match.group(1).strip().replace('*', '').replace('_', '').strip()
