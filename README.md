@@ -30,7 +30,7 @@ Backend: Python 3.11
 
 Database: PostgreSQL (via Supabase/Neon)
 
-AI Engine: Google Gemini 1.5/2.0 Flash
+AI Engine: Google Gemini 2.0 Flash
 
 Scraping: yt-dlp + requests (with stealth headers)
 
