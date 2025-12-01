@@ -1,5 +1,6 @@
 import streamlit as st
 import psycopg2
+from psycopg2 import pool
 import hashlib
 import time
 import requests
@@ -14,16 +15,11 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 2. IMAGE PROXY HELPER (NEW)
+# 2. IMAGE PROXY HELPER
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_image_proxy(url):
-    """
-    Fetches image on the server side to bypass browser referrer blocking.
-    Cached for 1 hour to improve performance.
-    """
     if not url: return None
     try:
-        # Headers to look like a real browser visiting Instagram
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Referer': 'https://www.instagram.com/'
@@ -31,30 +27,60 @@ def load_image_proxy(url):
         response = requests.get(url, headers=headers, timeout=3)
         if response.status_code == 200:
             return BytesIO(response.content)
-    except:
-        pass
+    except: pass
     return None
 
-# --- DATABASE HELPERS ---
+# --- DATABASE HELPERS (ROBUST POOLING) ---
+
 @st.cache_resource
-def get_connection():
-    if not DATABASE_URL: return None
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+def get_db_pool():
+    """
+    Creates a Threaded Connection Pool.
+    Cached resource: The POOL persists, but individual connections are borrowed/returned.
+    """
+    if not DATABASE_URL:
+        st.error("CRITICAL: DATABASE_URL is missing.")
+        return None
+    try:
+        # Create a pool with min 1, max 10 connections
+        return psycopg2.pool.ThreadedConnectionPool(
+            1, 10,
+            dsn=DATABASE_URL,
+            sslmode='require'
+        )
+    except Exception as e:
+        st.error(f"Failed to connect to Database: {e}")
+        return None
 
 def run_query(query, params=None):
-    conn = get_connection()
-    if not conn: return None
+    """
+    Safe query execution using the pool.
+    Auto-commits for write operations. Returns data for SELECTs.
+    """
+    db_pool = get_db_pool()
+    if not db_pool: return None
+    
+    conn = None
     try:
+        # Borrow connection
+        conn = db_pool.getconn()
         with conn.cursor() as cur:
             cur.execute(query, params)
+            
             if query.strip().upper().startswith("SELECT"):
-                return cur.fetchall()
+                result = cur.fetchall()
+                return result
             else:
                 conn.commit()
                 return True
     except Exception as e:
-        st.error(f"Database Error: {e}")
+        # Don't show confusing DB errors to user, just log console
+        print(f"DB Query Error: {e}") 
         return None
+    finally:
+        # CRITICAL: Always return connection to pool
+        if db_pool and conn:
+            db_pool.putconn(conn)
 
 def check_login(user_id, password):
     hashed = hashlib.sha256(password.encode()).hexdigest()
@@ -84,11 +110,10 @@ def show_login():
                 st.session_state.user_id = uid
                 st.rerun()
             else:
-                st.error("Invalid Credentials. Check your bot settings.")
+                st.error("Invalid Credentials. Check your ID and Password.")
 
 def show_dashboard():
     # --- HEADER ---
-    # Layout: Title | Refresh | Logout
     c1, c2, c3 = st.columns([5, 1, 1])
     with c1:
         st.header("My Stacks")
@@ -107,7 +132,9 @@ def show_dashboard():
     with col_cat:
         # Fetch categories dynamically
         cats_raw = run_query("SELECT DISTINCT category FROM links WHERE user_id = %s", (st.session_state.user_id,))
-        cats = ["All"] + sorted([c[0] for c in cats_raw if c[0] not in ["All", "Inbox"]])
+        cats = ["All"]
+        if cats_raw:
+            cats += sorted([c[0] for c in cats_raw if c[0] and c[0] not in ["All", "Inbox"]])
         selected_cat = st.selectbox("Category", cats, label_visibility="collapsed")
 
     st.divider()
@@ -135,7 +162,10 @@ def show_dashboard():
     filtered = []
     for r in rows:
         # 1=title, 5=summary
-        if search_q.lower() in r[1].lower() or (r[5] and search_q.lower() in r[5].lower()):
+        title_match = search_q.lower() in r[1].lower() if r[1] else False
+        summary_match = search_q.lower() in r[5].lower() if r[5] else False
+        
+        if not search_q or title_match or summary_match:
             filtered.append(r)
 
     # --- GRID LAYOUT ---
@@ -152,7 +182,6 @@ def show_dashboard():
                     if img_data:
                         st.image(img_data, use_container_width=True)
                     else:
-                        # Fallback UI if image is expired or blocked
                         st.warning("Image Expired")
                 else:
                     st.markdown('<div style="height:150px; background-color:#f0f2f6; border-radius: 5px 5px 0 0; margin-bottom: 10px;"></div>', unsafe_allow_html=True)
