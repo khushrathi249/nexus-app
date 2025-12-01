@@ -4,6 +4,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 import asyncio
 import re
 import os
+import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -12,30 +13,45 @@ import database
 import geo
 import ai_engine
 import scraper
-from config import TELEGRAM_BOT_TOKEN
+
+# --- SECRET MANAGEMENT (UPDATED FOR CLOUD) ---
+# Try local config first, fallback to Environment Variables
+try:
+    from config import TELEGRAM_BOT_TOKEN
+except ImportError:
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not TELEGRAM_BOT_TOKEN:
+    print("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN not found in config.py or Environment Variables.")
+    # We do NOT exit here immediately to allow the health check server to start 
+    # so you can see this error in the logs before it crashes.
 
 # --- HEALTH CHECK SERVER (REQUIRED FOR RENDER FREE TIER) ---
-# Render kills web services that don't bind to $PORT within 60s.
-# This dummy server satisfies that requirement.
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Nexus Bot is Alive")
 
+    # Suppress log messages for health checks to keep logs clean
+    def log_message(self, format, *args):
+        pass
+
 def start_health_server():
     try:
-        # Get port from environment or default to 8080
         port = int(os.environ.get("PORT", 8080))
         server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
         print(f"✅ Health check server listening on port {port}")
+        sys.stdout.flush()
         server.serve_forever()
     except Exception as e:
         print(f"❌ Failed to start health server: {e}")
+        sys.stdout.flush()
 
 # --- ERROR HANDLER ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"❌ Update Error: {context.error}")
+    sys.stdout.flush()
 
 # --- HANDLERS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,7 +141,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try: os.remove(data['video_path'])
         except: pass
     else:
-        # Restricted content fallback
         ai_summary, ai_category = ("⚠️ Restricted/Unreachable content.", "Inbox")
 
     save_data = {
@@ -151,15 +166,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Saved: {data['title']}")
 
 if __name__ == '__main__':
-    # START HEALTH CHECK SERVER IN BACKGROUND
+    # START HEALTH CHECK SERVER IMMEDIATELY
+    # This ensures Render sees an open port even if the database fails to connect later
     threading.Thread(target=start_health_server, daemon=True).start()
     
-    database.init_db()
-    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
-    application.add_error_handler(error_handler)
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('password', set_password_command))
-    application.add_handler(CommandHandler('geotest', geotest))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("Nexus Modular Bot is online...")
-    application.run_polling()
+    # Initialize DB (This might take a second)
+    try:
+        database.init_db()
+    except Exception as e:
+        print(f"❌ DB Init Error: {e}")
+        # We don't exit, so the health server keeps running and you can see logs
+    
+    if TELEGRAM_BOT_TOKEN:
+        application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
+        application.add_error_handler(error_handler)
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CommandHandler('password', set_password_command))
+        application.add_handler(CommandHandler('geotest', geotest))
+        application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        
+        print("Nexus Modular Bot is online...")
+        sys.stdout.flush() # Force logs to appear in Render
+        application.run_polling()
+    else:
+        print("❌ Bot could not start: Token missing.")
+        sys.stdout.flush()
+        # Keep process alive for 60s so Render logs are readable before crash
+        import time
+        time.sleep(60)
