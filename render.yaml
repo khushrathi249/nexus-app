@@ -1,6 +1,5 @@
 services:
   # 1. THE VIEWER (Web Service)
-  # This runs the visual dashboard at https://nexus-viewer.onrender.com
   - type: web
     name: nexus-viewer
     runtime: docker
@@ -8,31 +7,29 @@ services:
     envVars:
       - key: PORT
         value: 8501
-      # This pulls the connection string from the database defined below
       - key: DATABASE_URL
         fromDatabase:
           name: nexus-db
           property: connectionString
-    # Command to start Streamlit on port 8501
     dockerCommand: streamlit run viewer.py --server.port $PORT --server.address 0.0.0.0
 
-  # 2. THE BOT (Background Worker)
-  # This runs the Telegram Bot 24/7 in the background
-  - type: worker
+  # 2. THE BOT (Converted to Web Service for Free Tier)
+  # Changed from 'worker' to 'web' to bypass payment requirement
+  - type: web
     name: nexus-bot
     runtime: docker
     plan: free
     envVars:
-      # This pulls the same connection string so both apps talk to the same DB
+      - key: PORT
+        value: 8080
       - key: DATABASE_URL
         fromDatabase:
           name: nexus-db
           property: connectionString
-    # Command to start the Python bot script
+    # Bot now runs a dummy server on $PORT to satisfy Render
     dockerCommand: python bot.py
 
-# 3. THE DATABASE (PostgreSQL)
-# This automatically spins up a managed Postgres instance for you
+# 3. THE DATABASE
 databases:
   - name: nexus-db
     plan: free

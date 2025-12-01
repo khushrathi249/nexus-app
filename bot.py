@@ -4,6 +4,8 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 import asyncio
 import re
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # --- CUSTOM MODULES ---
 import database
@@ -11,6 +13,25 @@ import geo
 import ai_engine
 import scraper
 from config import TELEGRAM_BOT_TOKEN
+
+# --- HEALTH CHECK SERVER (REQUIRED FOR RENDER FREE TIER) ---
+# Render kills web services that don't bind to $PORT within 60s.
+# This dummy server satisfies that requirement.
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Nexus Bot is Alive")
+
+def start_health_server():
+    try:
+        # Get port from environment or default to 8080
+        port = int(os.environ.get("PORT", 8080))
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        print(f"✅ Health check server listening on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"❌ Failed to start health server: {e}")
 
 # --- ERROR HANDLER ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -130,11 +151,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Saved: {data['title']}")
 
 if __name__ == '__main__':
+    # START HEALTH CHECK SERVER IN BACKGROUND
+    threading.Thread(target=start_health_server, daemon=True).start()
+    
     database.init_db()
     application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
     application.add_error_handler(error_handler)
     application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('password', set_password_command)) # NEW
+    application.add_handler(CommandHandler('password', set_password_command))
     application.add_handler(CommandHandler('geotest', geotest))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     print("Nexus Modular Bot is online...")
