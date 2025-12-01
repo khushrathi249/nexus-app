@@ -12,7 +12,6 @@ services:
         fromDatabase:
           name: nexus-db
           property: connectionString
-      # Force Render to ask for these secrets
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: GEMINI_API_KEY
@@ -34,16 +33,11 @@ services:
         fromDatabase:
           name: nexus-db
           property: connectionString
-      # Force Render to ask for these secrets
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: OLA_MAPS_API_KEY
-        sync: false
-      - key: INSTAGRAM_USERNAME
-        sync: false
-      - key: INSTAGRAM_PASSWORD
         sync: false
     dockerCommand: python bot.py
 
