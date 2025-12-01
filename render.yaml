@@ -4,6 +4,7 @@ services:
     name: nexus-viewer
     runtime: docker
     plan: free
+    numInstances: 1
     envVars:
       - key: PORT
         value: 8501
@@ -11,14 +12,21 @@ services:
         fromDatabase:
           name: nexus-db
           property: connectionString
+      # Force Render to ask for these secrets
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OLA_MAPS_API_KEY
+        sync: false
     dockerCommand: streamlit run viewer.py --server.port $PORT --server.address 0.0.0.0
 
-  # 2. THE BOT (Converted to Web Service for Free Tier)
-  # Changed from 'worker' to 'web' to bypass payment requirement
+  # 2. THE BOT (Web Service)
   - type: web
     name: nexus-bot
     runtime: docker
     plan: free
+    numInstances: 1
     envVars:
       - key: PORT
         value: 8080
@@ -26,7 +34,17 @@ services:
         fromDatabase:
           name: nexus-db
           property: connectionString
-    # Bot now runs a dummy server on $PORT to satisfy Render
+      # Force Render to ask for these secrets
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OLA_MAPS_API_KEY
+        sync: false
+      - key: INSTAGRAM_USERNAME
+        sync: false
+      - key: INSTAGRAM_PASSWORD
+        sync: false
     dockerCommand: python bot.py
 
 # 3. THE DATABASE
