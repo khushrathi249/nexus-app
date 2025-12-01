@@ -22,7 +22,7 @@ except ImportError:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # URL for the viewer (Set this in Render Env Vars)
-VIEWER_URL = os.getenv("VIEWER_URL", "https://your-app-name.onrender.com")
+VIEWER_URL = os.getenv("VIEWER_URL", "https://nexus-viewer.onrender.com/")
 
 if not TELEGRAM_BOT_TOKEN:
     print("❌ CRITICAL: TELEGRAM_BOT_TOKEN missing.")
